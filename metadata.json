@@ -1,0 +1,5 @@
+{
+  "name": "TaskCat Board",
+  "description": "A high-fidelity Kanban task management board featuring a modern glassmorphism UI, drag-and-drop capabilities, and responsive design.",
+  "requestFramePermissions": []
+}
