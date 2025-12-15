@@ -40,7 +40,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
     e.stopPropagation();
     
     // Live Reordering: If we drag a task over this card, swap positions immediately
-    // Using simple swap logic creates the "push away" effect when combined with FLIP animation
+    // The App.tsx logic now handles correct insertion index to prevent jitter loops
     if (draggedItemType === 'TASK' && !isDragging) {
        onMoveTask(columnId, task.id);
     }
@@ -61,9 +61,10 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   };
 
   // Dragging Visuals
-  // If ANY drag is happening, disable the hover lift effect to make reordering stable
+  // CRITICAL: pointer-events-none on the dragged placeholder ensures the mouse events 
+  // fall through to the underlying elements (or previous neighbors), preventing self-triggering loops.
   const containerStyle = isDragging 
-    ? 'opacity-40 scale-[0.98] grayscale' 
+    ? 'opacity-40 scale-[0.98] grayscale pointer-events-none' 
     : draggedItemType 
         ? 'opacity-100' // No hover effect during drag of other items
         : 'opacity-100 hover:-translate-y-0.5';
@@ -80,7 +81,6 @@ export const TaskCard: React.FC<TaskCardProps> = ({
         rounded-xl transition-all duration-200 ease-out cursor-grab active:cursor-grabbing
         group relative select-none
         ${containerStyle}
-        ${isDragging ? 'pointer-events-none' : ''} 
       `}
     >
       {/* Actual Card Content */}

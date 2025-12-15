@@ -6,11 +6,21 @@ import { Column as ColumnType, Task, DragItem } from './types';
 import { Column } from './components/Column';
 import { Modal } from './components/Modal';
 import { Menu } from './components/Menu';
+import { RecycleBin } from './components/RecycleBin';
+import { SettingsModal } from './components/SettingsModal';
+import { MailModal } from './components/MailModal';
 import autoAnimate from '@formkit/auto-animate';
 
 const App: React.FC = () => {
   const [columns, setColumns] = useState<ColumnType[]>(INITIAL_DATA);
   const [draggedItem, setDraggedItem] = useState<DragItem | null>(null);
+  
+  // Deleted Tasks State (Recycle Bin)
+  const [deletedTasks, setDeletedTasks] = useState<(Task & { originalColumnId: string })[]>([]);
+  
+  // Active Aux Modal State
+  const [activeAuxModal, setActiveAuxModal] = useState<'none' | 'settings' | 'mail' | 'recycle'>('none');
+
   const dragTimeoutRef = useRef<number | null>(null);
   const columnsContainerRef = useRef<HTMLDivElement>(null);
 
@@ -102,15 +112,78 @@ const App: React.FC = () => {
     }));
   };
 
+  // --- Recycle Bin Logic ---
+
   const handleDelete = (type: 'task' | 'column', id: string) => {
     if (type === 'task') {
-      setColumns(prev => prev.map(col => ({
-        ...col,
-        tasks: col.tasks.filter(t => t.id !== id)
-      })));
+      // Find the task and its column first to save for restore
+      let taskToDelete: Task | undefined;
+      let sourceColId: string | undefined;
+
+      columns.forEach(col => {
+        const t = col.tasks.find(task => task.id === id);
+        if (t) {
+            taskToDelete = t;
+            sourceColId = col.id;
+        }
+      });
+
+      if (taskToDelete && sourceColId) {
+          // Move to recycle bin
+          setDeletedTasks(prev => [{ ...taskToDelete!, originalColumnId: sourceColId! }, ...prev]);
+          
+          // Remove from board
+          setColumns(prev => prev.map(col => ({
+            ...col,
+            tasks: col.tasks.filter(t => t.id !== id)
+          })));
+      }
     } else {
-      setColumns(prev => prev.filter(c => c.id !== id));
+      // For columns, we just delete permanently for this version (or could add to a separate bin)
+      if (window.confirm('确定要删除此列表吗？列表内的任务也将被删除。')) {
+          setColumns(prev => prev.filter(c => c.id !== id));
+      }
     }
+  };
+
+  const handleRestoreTask = (taskId: string) => {
+    const taskToRestore = deletedTasks.find(t => t.id === taskId);
+    if (!taskToRestore) return;
+
+    // Remove from recycle bin
+    setDeletedTasks(prev => prev.filter(t => t.id !== taskId));
+
+    // Add back to board
+    setColumns(prev => {
+        // Try to find original column
+        const colExists = prev.some(c => c.id === taskToRestore.originalColumnId);
+        
+        if (colExists) {
+            return prev.map(col => {
+                if (col.id === taskToRestore.originalColumnId) {
+                    // Remove the extra meta property before adding back
+                    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                    const { originalColumnId, ...cleanTask } = taskToRestore;
+                    return { ...col, tasks: [cleanTask, ...col.tasks] };
+                }
+                return col;
+            });
+        } else {
+            // If original column deleted, add to the first available column
+             if (prev.length > 0) {
+                 const newCols = [...prev];
+                 // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                 const { originalColumnId, ...cleanTask } = taskToRestore;
+                 newCols[0] = { ...newCols[0], tasks: [cleanTask, ...newCols[0].tasks] };
+                 return newCols;
+             }
+             return prev;
+        }
+    });
+  };
+
+  const handlePermanentDelete = (taskId: string) => {
+      setDeletedTasks(prev => prev.filter(t => t.id !== taskId));
   };
 
   // --- Menu Handlers ---
@@ -164,13 +237,8 @@ const App: React.FC = () => {
     
     const { taskId: draggedId, sourceColId: currentSourceColId } = draggedItem;
 
-    // Optimization: Skip if hovering over self or if nothing actually changes
     if (draggedId === targetTaskId) return;
     
-    // If we are in the same column and no target task is provided (e.g. empty column area),
-    // skip unless moving to a different column.
-    if (currentSourceColId === targetColId && !targetTaskId) return;
-
     setColumns(prev => {
         const newCols = [...prev];
         const sColIdx = newCols.findIndex(c => c.id === currentSourceColId);
@@ -178,29 +246,38 @@ const App: React.FC = () => {
 
         if (sColIdx === -1 || tColIdx === -1) return prev;
 
-        // Clone columns.
+        // Clone columns
         const sCol = { ...newCols[sColIdx], tasks: [...newCols[sColIdx].tasks] };
         const tCol = (sColIdx === tColIdx) 
             ? sCol 
             : { ...newCols[tColIdx], tasks: [...newCols[tColIdx].tasks] };
         
-        // Indices
+        // Find indices in ORIGINAL state (before modification)
         const sTaskIdx = sCol.tasks.findIndex(t => t.id === draggedId);
         if (sTaskIdx === -1) return prev;
-
-        let tTaskIdx = tCol.tasks.length;
-        if (targetTaskId) {
-            const idx = tCol.tasks.findIndex(t => t.id === targetTaskId);
-            if (idx !== -1) tTaskIdx = idx;
-        }
 
         // 1. Remove from source
         const [movedTask] = sCol.tasks.splice(sTaskIdx, 1);
 
-        // 2. Insert into target
+        // 2. Determine Insertion Index
+        let tTaskIdx = tCol.tasks.length; // Default to end
+
+        if (targetTaskId) {
+            const idx = tCol.tasks.findIndex(t => t.id === targetTaskId);
+            
+            if (idx !== -1) {
+                tTaskIdx = idx;
+                // Simple directional heuristic for same-column sort
+                if (sColIdx === tColIdx && sTaskIdx <= idx) {
+                    tTaskIdx = idx + 1;
+                }
+            }
+        }
+
+        // 3. Insert into target
         tCol.tasks.splice(tTaskIdx, 0, movedTask);
 
-        // 3. Update state
+        // 4. Update state
         newCols[sColIdx] = sCol;
         if (sColIdx !== tColIdx) newCols[tColIdx] = tCol;
 
@@ -260,9 +337,31 @@ const App: React.FC = () => {
                 </div>
 
                 <div className="flex items-center gap-4 text-gray-700">
-                    <Trash2 size={18} className="cursor-pointer hover:text-red-500 transition-colors" />
-                    <Mail size={18} className="cursor-pointer hover:text-blue-500 transition-colors" />
-                    <Settings size={18} className="cursor-pointer hover:text-gray-900 transition-colors" />
+                    <div className="relative group">
+                        <Trash2 
+                            size={18} 
+                            onClick={() => setActiveAuxModal('recycle')}
+                            className={`cursor-pointer transition-colors ${activeAuxModal === 'recycle' ? 'text-red-500' : 'hover:text-red-500'}`} 
+                        />
+                        {deletedTasks.length > 0 && (
+                            <span className="absolute -top-2 -right-2 bg-red-500 text-white text-[9px] w-4 h-4 rounded-full flex items-center justify-center font-bold shadow-sm pointer-events-none">
+                                {deletedTasks.length}
+                            </span>
+                        )}
+                    </div>
+                    
+                    <Mail 
+                        size={18} 
+                        onClick={() => setActiveAuxModal('mail')}
+                        className={`cursor-pointer transition-colors ${activeAuxModal === 'mail' ? 'text-blue-500' : 'hover:text-blue-500'}`} 
+                    />
+                    
+                    <Settings 
+                        size={18} 
+                        onClick={() => setActiveAuxModal('settings')}
+                        className={`cursor-pointer transition-colors ${activeAuxModal === 'settings' ? 'text-gray-900' : 'hover:text-gray-900'}`} 
+                    />
+                    
                     <div className="h-4 w-px bg-gray-400/50 mx-1"></div>
                     <div className="flex items-center gap-3">
                         <Minus size={18} className="cursor-pointer hover:bg-black/5 rounded" />
@@ -316,13 +415,32 @@ const App: React.FC = () => {
                 </button>
             </div>
 
-            {/* Modal */}
+            {/* Main Task Modal */}
             <Modal 
               isOpen={modalState.isOpen}
               mode={modalState.mode}
               initialData={modalState.initialData}
               onClose={() => setModalState({ ...modalState, isOpen: false })}
               onSave={handleSaveTask}
+            />
+
+            {/* Auxiliary Modals */}
+            <RecycleBin 
+                isOpen={activeAuxModal === 'recycle'}
+                onClose={() => setActiveAuxModal('none')}
+                deletedTasks={deletedTasks}
+                onRestore={handleRestoreTask}
+                onPermanentDelete={handlePermanentDelete}
+            />
+            
+            <SettingsModal 
+                isOpen={activeAuxModal === 'settings'}
+                onClose={() => setActiveAuxModal('none')}
+            />
+
+            <MailModal 
+                isOpen={activeAuxModal === 'mail'}
+                onClose={() => setActiveAuxModal('none')}
             />
 
             {/* Context Menu */}
